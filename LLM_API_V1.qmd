@@ -293,6 +293,8 @@ stopifnot(is.character(hello), length(hello) == 1L, nzchar(trimws(hello)))
 hello
 ```
 
+**Blablador rate limit:** The service limits how many requests you can send in a given period. If you receive HTTP 429 (Too Many Requests), wait a little and rerun the affected chunk. Avoid repeatedly rendering the full notebook in quick succession.
+
 ### Persona / system description
 
 In addition to the user message, you can add a *system message* that defines the model’s persona or role. Extend the `messages` list used above with a system role, for example:
