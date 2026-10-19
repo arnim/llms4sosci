@@ -207,7 +207,24 @@ headers <- add_headers(
   Authorization = paste("Bearer", api_key),
   "Content-Type" = "application/json"
 )
+
+# Batch examples can hit rate limits. Respect Retry-After and retry transient
+# failures with exponential backoff, rather than immediately losing a result.
+post_chat <- function(body) {
+  res <- RETRY(
+    "POST", url = base_url, headers, timeout(120),
+    body = toJSON(body, auto_unbox = TRUE), encode = "raw",
+    times = 6, pause_base = 2, pause_cap = 60, pause_min = 2,
+    terminate_on = c(400, 401, 403, 404, 422), quiet = TRUE
+  )
+  stop_for_status(res)
+  res
+}
 ```
+
+The helper retries rate-limit responses (HTTP 429) and temporary server errors.
+If a request still fails after six attempts, it reports an error. Authentication
+errors are not retried. All examples below use this same request helper.
 
 Blablador's model selection can change. The following authenticated check lists
 currently available model IDs and verifies that the selected one exists.
@@ -275,14 +292,7 @@ body <- list(
   temperature = temperature
 )
 
-res <- POST(
-  url = base_url,
-  headers,
-  body = toJSON(body, auto_unbox = TRUE),
-  encode = "raw"
-)
-
-stop_for_status(res)
+res <- post_chat(body)
 
 # Read the response body from `res`
 txt <- content(res, as = "text", encoding = "UTF-8")
@@ -384,14 +394,7 @@ body <- list(
   temperature = 0.3
 )
 
-res <- POST(
-  url = base_url,
-  headers,
-  body = toJSON(body, auto_unbox = TRUE),
-  encode = "raw"
-)
-
-stop_for_status(res)
+res <- post_chat(body)
 
 txt <- content(res, as = "text", encoding = "UTF-8")
 parsed <- fromJSON(txt, simplifyVector = FALSE)
@@ -465,13 +468,7 @@ classify_text <- function(text, max_tokens = 512, temperature = 0.2) {
     temperature = temperature
   )
 
-  res <- POST(
-    url = base_url,
-    headers,
-    body = toJSON(body, auto_unbox = TRUE),
-    encode = "raw"
-  )
-  stop_for_status(res)
+  res <- post_chat(body)
 
   txt <- content(res, as = "text", encoding = "UTF-8")
   parsed <- fromJSON(txt, simplifyVector = FALSE)
@@ -542,10 +539,7 @@ classify_text_json <- function(text) {
     max_tokens = 512
   )
 
-  res <- POST(url = base_url, headers,
-              body = toJSON(body, auto_unbox = TRUE),
-              encode = "raw")
-  stop_for_status(res)
+  res <- post_chat(body)
 
   parsed <- fromJSON(content(res, "text", encoding = "UTF-8"), simplifyVector = FALSE)
   raw <- parsed$choices[[1]]$message$content
