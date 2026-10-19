@@ -14,6 +14,9 @@ curl --fail --location --retry 3 \
   "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-amd64.tar.gz" \
   --output "$archive"
 mkdir -p "$HOME/.local/share" "$HOME/.local/bin"
+# Forward only the needed runtime variables into RStudio, without secret files.
+install -m 755 .binder/rserver "$HOME/.local/bin/rserver"
+install -m 755 .binder/rsession "$HOME/.local/bin/rsession-with-hub-env"
 tar -xzf "$archive" -C "$HOME/.local/share"
 ln -sf "$HOME/.local/share/quarto-${QUARTO_VERSION}/bin/quarto" "$HOME/.local/bin/quarto"
 "$HOME/.local/bin/quarto" --version

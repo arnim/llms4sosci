@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# RStudio deliberately clears most inherited variables before starting R.
+exec /usr/lib/rstudio-server/bin/rserver \
+  --rsession-path="$HOME/.local/bin/rsession-with-hub-env" "$@"
