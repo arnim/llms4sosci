@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # New RStudio versions require the proxy's writable session-RPC key support.
-# Upgrade the older proxy bundled by Jupyter4NFDI's Repo2Docker buildpack.
-python3 -m pip install --no-cache-dir jupyter-rsession-proxy==2.5.1
+# Pin the upstream session-RPC key fix, not yet in the 2.5.1 release.
+python3 -m pip install --no-cache-dir \
+  https://github.com/jupyterhub/jupyter-rsession-proxy/archive/88efc0294f870347f328bab4862e0650d6877d24.tar.gz
 
 # Install one pinned Quarto version, without requiring root at build time.
 QUARTO_VERSION=1.8.26
