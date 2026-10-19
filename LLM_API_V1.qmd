@@ -119,58 +119,115 @@ To access LLM APIs, create an account with a provider and generate a secret API 
 - **Blablador**: Registration and discussion at the [Blablador API access guide](https://sdlaml.pages.jsc.fz-juelich.de/ai/guides/blablador_api_access/). The service is free for academic use in Germany.
 - **OpenRouter**: Create an account at [openrouter.ai](https://openrouter.ai). The service allows access to all major models.
 
-Depending on the provider, generating the key and using it may not work until you switch to a paid plan or add funds to your account. Review the provider's pricing overview before continuing. While you can do the following with most LLMs, we will stick to OpenAI´s GPT for this tutorial.
+Depending on the provider, generating the key and using it may not work until you switch to a paid plan or add funds to your account. Review the provider's pricing overview before continuing. This tutorial uses Blablador on Jupyter4NFDI and also supports OpenAI outside that environment.
+
+### Blablador on Jupyter4NFDI: no separate key needed
+
+When running this tutorial in RStudio on Jupyter4NFDI,
+`JUPYTERHUB_API_TOKEN` is already provided by the environment. Blablador accepts
+this token with the prefix `jhub-jupyter4nfdi-prod-`. There is no need to copy
+the token, save it in `.Renviron`, or run `setx`.
+
+Treat the token as a password: never print `api_key`, `hub_token`, or the
+authorization headers, and never save them in notebook output or Git.
 
 ### Best Practices for Credential Management
 
-Never hard-code your API key in scripts as we do here. Instead, store it as an environment variable. An environment variable is a setting stored by your operating system, outside of your R script. R can read it, but it never appears in your code, so you cannot accidentally share it when you send a script to a colleague or push it to GitHub. This process differs depending on your operating system. Most providers provide best-practice guidance. You can find the [OpenAI guide on API key safety here](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety).
+Outside Jupyter4NFDI, store a separately issued key as `BLABLADOR_API_KEY` or
+`OPENAI_API_KEY` in your environment. Never hard-code an actual key in this
+notebook. See the [OpenAI guide on API key safety](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety).
 
-You only need to do this once per computer. Run the code below in the R console (the panel where you normally type commands directly, not inside your script file). It uses R to pass the command on to your operating system. Pick the chunk that matches your system and replace `your_openai_key_here` with your actual key.
-
-**Windows**
+For example, on Windows, run this once in the R console, not in a saved script,
+then restart R:
 
 ```{r, eval=FALSE}
 system('setx OPENAI_API_KEY "your_openai_key_here"')
 ```
 
-Retrieving the key in R after restarting:
+On Windows, macOS, or Linux, R's startup file `~/.Renviron` is another option.
+Add a line such as `OPENAI_API_KEY=your_openai_key_here` (or
+`BLABLADOR_API_KEY=your_blablador_key_here`) using a text editor, then restart R.
+Keep this file out of Git. These manual steps are **not needed on Jupyter4NFDI**.
+
+### Select the provider and read credentials
+
+By default, use Blablador when a JupyterHub token or a Blablador key is available,
+otherwise OpenAI. Set `LLM_PROVIDER` to `blablador` or `openai` before running
+the notebook to override this choice. On Jupyter4NFDI the Hub token takes
+precedence over a separate Blablador key, which might be stale.
+
 ```{r}
-api_key <- Sys.getenv("OPENAI_API_KEY")
+#| label: api-credentials
+hub_token <- Sys.getenv("JUPYTERHUB_API_TOKEN")
+blablador_key <- Sys.getenv("BLABLADOR_API_KEY")
 
-# Checking if api_key has been successfully loaded
-has_api_key <- exists("api_key", inherits = TRUE) &&
-  !is.na(api_key) &&
-  nzchar(api_key)
+provider <- Sys.getenv("LLM_PROVIDER")
+if (!nzchar(provider)) {
+  provider <- if (nzchar(hub_token) || nzchar(blablador_key)) "blablador" else "openai"
+}
+stopifnot(provider %in% c("blablador", "openai"))
+
+if (provider == "blablador") {
+  api_key <- if (nzchar(hub_token)) {
+    paste0("jhub-jupyter4nfdi-prod-", hub_token)
+  } else {
+    blablador_key
+  }
+  api_root <- "https://api.blablador.fz-juelich.de/v1"
+  model_id <- Sys.getenv("BLABLADOR_MODEL", "alias-fast")
+} else {
+  api_key <- Sys.getenv("OPENAI_API_KEY")
+  api_root <- "https://api.openai.com/v1"
+  model_id <- "gpt-4.1-mini"
+}
+
+has_api_key <- nzchar(api_key)
+# Only report non-secret configuration, never the key itself.
+message("Provider: ", provider, "; model: ", model_id,
+        "; credential available: ", has_api_key)
 ```
-
-**Other operating systems**
-
-A more reliable option, which works the same way on Windows, macOS and Linux, is to store the key in R's own startup file `.Renviron`:
-
-```{r, eval=FALSE}
-write('OPENAI_API_KEY=your_openai_key_here', file = "~/.Renviron", append = TRUE)
-```
-R reads this file every time it starts, so the key is available in any R session on that computer. If you work with Git, make sure `.Renviron` is listed in your `.gitignore` so the key never ends up in a repository.
-
-<!-- @Arnim: Was ist gute Praxis, um solche Keys zu hinterlegen? Ich hätte es in Renvironment und mit gitignore gearbeitet, aber das macht den Transfer zu Python schwierig, oder? Aber wie ist das mit VMs bzw. interaktiven Environments?-->
 
 ## Setting Up the Coding Environment
 
-In this section, we prepare the R environment for making authenticated requests to the OpenAI API. We first load the required packages for handling HTTP requests (`httr`) and JSON data (`jsonlite`). We then define the base URL for the OpenAI **Responses API**, which is used to send prompts and receive model outputs.
+Both providers support the **Chat Completions API**. We use its `messages`,
+`max_tokens`, and `choices` fields throughout, rather than OpenAI's
+provider-specific Responses API.
 
-Authentication uses the API key stored in the `api_key` object. This key is passed to the API in the HTTP `Authorization` header as a Bearer token, along with the required `Content-Type` header. Once defined, you can reuse these components across all subsequent API calls, ensuring a consistent and reproducible setup for interacting with OpenAI models.
+Authentication passes `api_key` in the HTTP `Authorization` header as a Bearer
+token. Reuse these settings in all subsequent requests.
 
 ```{r, eval=has_api_key}
+#| label: api-setup
 library(httr)
 library(jsonlite)
 
-base_url <- "https://api.openai.com/v1/responses"
+base_url <- paste0(api_root, "/chat/completions")
 
 headers <- add_headers(
-Authorization = paste("Bearer", api_key),
-"Content-Type" = "application/json"
+  Authorization = paste("Bearer", api_key),
+  "Content-Type" = "application/json"
 )
+```
 
+Blablador's model selection can change. The following authenticated check lists
+currently available model IDs and verifies that the selected one exists.
+To select another model, set `BLABLADOR_MODEL` before running the notebook.
+Aliases such as `alias-fast` may point to different models over time; record the
+concrete model used for research.
+
+```{r, eval=has_api_key}
+#| label: check-model
+if (provider == "blablador") {
+  models_res <- GET(paste0(api_root, "/models"), headers, timeout(60))
+  stop_for_status(models_res)
+  models <- fromJSON(content(models_res, "text", encoding = "UTF-8"),
+                     simplifyVector = FALSE)
+  model_ids <- vapply(models$data, function(x) x$id, character(1))
+  print(model_ids)
+  if (!model_id %in% model_ids) {
+    stop("Selected model is not available. Choose BLABLADOR_MODEL from the list above.")
+  }
+}
 ```
 
 ## First request: a minimal test call
@@ -178,14 +235,14 @@ Authorization = paste("Bearer", api_key),
 In this first test call, we use the **minimal required settings** to talk to an LLM via the API. For your own use cases, you will mainly want to adjust three things:
 
 - **`model`**: This selects which **model** you want to use.  
-  - OpenAI (Responses API): `model = "gpt-4.1-mini"`  
+  - Use `model = model_id`: Blablador defaults to `"alias-fast"`; OpenAI uses `"gpt-4.1-mini"`.
   Depending on your use case (costs, speed, context length, performance), you can choose a different model here. You can find a list of available models in each provider’s documentation.
 
 - **`Token limit`**: Defines how many **tokens** the model may use at most for its response.  
-  - OpenAI (Responses API): `max_output_tokens`  
-  Small values (e.g., `50`) keep answers short and help to control costs. Larger values allow longer, more detailed responses but consume more quota. In this minimal example, a small value is sufficient because we only expect a very short reply.
+  - Chat Completions API: `max_tokens`
+  We allow `512` tokens because reasoning models may use some of this budget before producing visible text. A very small limit (e.g., `20` or `50`) can produce an empty or truncated answer. Ask for a short answer in the prompt; increase the budget if the response is cut off.
 
-- **`temperature`** (OpenAI Responses API): Controls how **creative or random** the model’s output is.  
+- **`temperature`** (Chat Completions API): Controls how **creative or random** the model’s output is.
   - `temperature = 0` → very deterministic, almost the same answer every time for the same input.  
   - Higher values (e.g., `0.7` or `1.0`) → more diverse, creative responses.  
   For a stable test call, we use a relatively low value (`0.2`) to get reproducible, rather neutral outputs.
@@ -196,11 +253,11 @@ We also define a very simple message (**prompt**), e.g.:
       list(role = "user", content = "Hello! Please reply with a single short sentence.")
     )
 
-This is the text we send to the model. For your own use case, you replace this string with your own question, your system prompt, or a description of your data/task. *(In some APIs you may also see this represented as a `messages = ...` list — conceptually it serves the same purpose: providing the user’s instruction/content.)*
+This is the text we send to the model. For your own use case, replace this string with your own question, system prompt, or description of your data/task.
 
 ### What is the output?
 
-The OpenAI API returns a **structured JSON response**, from which we extract the actual model response text, which is typically located at `out$output[[1]]$content[[1]]$text`.  
+The Chat Completions API returns a **structured JSON response**, from which we extract the model response text at `parsed$choices[[1]]$message$content`.
 
 If you run the code and do not see any error, you should see a **short, model-generated sentence** in the output panel (e.g. a simple English sentence). This means: your API key works, the basic configuration is correct – and you can now adjust `model`, the token limit, `temperature`, and the prompt to fit your own needs.
 
@@ -208,13 +265,13 @@ If you run the code and do not see any error, you should see a **short, model-ge
 ```{r, eval=has_api_key}
 
 #Defining temperature and token limit
-max_tokens  <- 50
+max_tokens  <- 512
 temperature <- 0.2
 
 body <- list(
-  model = "gpt-4.1-mini",
-  input = "Hello! Please reply with one short sentence.",
-  max_output_tokens = max_tokens,
+  model = model_id,
+  messages = list(list(role = "user", content = "Hello! Please reply with one short sentence.")),
+  max_tokens = max_tokens,
   temperature = temperature
 )
 
@@ -231,13 +288,14 @@ stop_for_status(res)
 txt <- content(res, as = "text", encoding = "UTF-8")
 parsed <- fromJSON(txt, simplifyVector = FALSE)
 
-hello <- parsed$output[[1]]$content[[1]]$text
+hello <- parsed$choices[[1]]$message$content
+stopifnot(is.character(hello), length(hello) == 1L, nzchar(trimws(hello)))
 hello
 ```
 
 ### Persona / system description
 
-In addition to the user message, you can also add a *system message* that defines the model’s persona or role. In the minimal call above we only send a single string via `input`, but many APIs let you pass a list of messages with different roles instead, for example:
+In addition to the user message, you can add a *system message* that defines the model’s persona or role. Extend the `messages` list used above with a system role, for example:
 
 ```r
 messages = list(
@@ -320,9 +378,9 @@ zero_shot_prompt <- paste(
 )
 
 body <- list(
-  model = "gpt-4.1-mini",
-  input = zero_shot_prompt,
-  max_output_tokens = 80,
+  model = model_id,
+  messages = list(list(role = "user", content = zero_shot_prompt)),
+  max_tokens = 512,
   temperature = 0.3
 )
 
@@ -338,8 +396,8 @@ stop_for_status(res)
 txt <- content(res, as = "text", encoding = "UTF-8")
 parsed <- fromJSON(txt, simplifyVector = FALSE)
 
-# Typical Responses API text path:
-answer <- parsed$output[[1]]$content[[1]]$text
+# Chat Completions API text path:
+answer <- parsed$choices[[1]]$message$content
 cat(answer)
 ```
 
@@ -375,7 +433,8 @@ glimpse(play_df_small)
 ```{r, echo=FALSE}
 if (!has_api_key) {
   message(
-    "No OPENAI_API_KEY found. API-dependent chunks are skipped during rendering and won't show real output.", " Set an OPENAI_API_KEY to run them interactively."
+    "No API credential found. API-dependent chunks are skipped. ",
+    "Launch on Jupyter4NFDI or set BLABLADOR_API_KEY / OPENAI_API_KEY."
   )
 }
 ```
@@ -388,7 +447,7 @@ This keeps the example close to the earlier single-paragraph classification and 
 to demonstrate the limitations of unstructured outputs later on.
 
 ```{r, eval=has_api_key}
-classify_text <- function(text, max_output_tokens = 20, temperature = 0.2) {
+classify_text <- function(text, max_tokens = 512, temperature = 0.2) {
 
   prompt <- paste(
     "Classify the stance of the following text toward climate change.",
@@ -400,9 +459,9 @@ classify_text <- function(text, max_output_tokens = 20, temperature = 0.2) {
   )
 
   body <- list(
-    model = "gpt-4.1-mini",
-    input = prompt,
-    max_output_tokens = max_output_tokens,
+    model = model_id,
+    messages = list(list(role = "user", content = prompt)),
+    max_tokens = max_tokens,
     temperature = temperature
   )
 
@@ -417,8 +476,9 @@ classify_text <- function(text, max_output_tokens = 20, temperature = 0.2) {
   txt <- content(res, as = "text", encoding = "UTF-8")
   parsed <- fromJSON(txt, simplifyVector = FALSE)
 
-  # Responses API text:
-  out_text <- parsed$output[[1]]$content[[1]]$text
+  # Chat Completions API text:
+  out_text <- parsed$choices[[1]]$message$content
+  stopifnot(is.character(out_text), length(out_text) == 1L, nzchar(trimws(out_text)))
   trimws(out_text)
 }
 ```
@@ -469,16 +529,17 @@ a single key, `stance`.
 ```{r, eval=has_api_key, message = FALSE}
 classify_text_json <- function(text) {
   prompt <- paste(
-    "Return ONLY JSON: {\"stance\":\"Pro\"|\"Anti\"|\"Neutral\"}",
+    "Classify the stance toward climate action as Pro, Anti, or Neutral.",
+    'Return ONLY a JSON object with key "stance", for example {"stance":"Pro"}.',
     "Text:", text,
     sep = "\n"
   )
 
   body <- list(
-    model = "gpt-4.1-mini",
-    input = prompt,
+    model = model_id,
+    messages = list(list(role = "user", content = prompt)),
     temperature = 0,
-    max_output_tokens = 20
+    max_tokens = 512
   )
 
   res <- POST(url = base_url, headers,
@@ -486,10 +547,15 @@ classify_text_json <- function(text) {
               encode = "raw")
   stop_for_status(res)
 
-parsed <- fromJSON(content(res, "text", encoding = "UTF-8"), simplifyVector = FALSE)
-raw <- parsed$output[[1]]$content[[1]]$text
-raw <- gsub("```json|```", "", raw)
-fromJSON(trimws(raw))
+  parsed <- fromJSON(content(res, "text", encoding = "UTF-8"), simplifyVector = FALSE)
+  raw <- parsed$choices[[1]]$message$content
+  stopifnot(is.character(raw), length(raw) == 1L, nzchar(trimws(raw)))
+  raw <- gsub("```json|```", "", raw)
+  result <- fromJSON(trimws(raw))
+  stopifnot(is.list(result), identical(names(result), "stance"),
+            length(result$stance) == 1L,
+            result$stance %in% c("Pro", "Anti", "Neutral"))
+  result
 
 }
 ```
